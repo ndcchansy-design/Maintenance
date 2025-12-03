@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>學校軟體與保養續期管理系統 (雲端版)</title>
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- FontAwesome -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <!-- EmailJS SDK -->
+    <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/@emailjs/browser@3/dist/email.min.js"></script>
+    
+    <style>
+        body { background-color: #f0f2f5; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        .container { max-width: 1000px; margin-top: 30px; margin-bottom: 50px; }
+        .card { border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); border: none; margin-bottom: 20px; }
+        .card-header { background-color: #fff; border-bottom: 1px solid #eee; font-weight: bold; padding: 15px 20px; border-radius: 12px 12px 0 0 !important; }
+        .status-urgent { background-color: #ffebee; color: #c62828; }
+        .status-warning { background-color: #fff3e0; color: #ef6c00; }
+        .status-ok { background-color: #ffffff; color: #2e7d32; }
+        .btn-primary { background-color: #1a73e8; border: none; }
+        .btn-primary:hover { background-color: #1557b0; }
+        /* Loading Overlay */
+        #loadingOverlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,255,255,0.8); z-index: 9999; justify-content: center; align-items: center; flex-direction: column; }
+    </style>
+</head>
+<body>
+
+    <div id="loadingOverlay">
+        <div class="spinner-border text-primary" role="status"></div>
+        <div class="mt-2 fw-bold" id="loadingText">處理中...</div>
+    </div>
+
+    <div class="container">
+        <div class="text-center mb-4">
+            <h2 class="text-primary"><i class="fas fa-cloud"></i> 學校續期管理系統 (Firebase)</h2>
+            <p class="text-muted">資料已同步至雲端資料庫</p>
+        </div>
+
+        <!-- EmailJS 設定 (存於 LocalStorage 方便個別老師設定) -->
+        <div class="card">
+            <div class="card-header text-secondary">
+                <i class="fas fa-envelope"></i> EmailJS 設定
+            </div>
+            <div class="card-body">
+                <div class="row g-2">
+                    <div class="col-md-4"><input type="text" id="ejs_pub" class="form-control form-control-sm" placeholder="Public Key"></div>
+                    <div class="col-md-4"><input type="text" id="ejs_svc" class="form-control form-control-sm" placeholder="Service ID"></div>
+                    <div class="col-md-4"><input type="text" id="ejs_tpl" class="form-control form-control-sm" placeholder="Template ID"></div>
+                    <div class="col-12"><button onclick="saveEmailConfig()" class="btn btn-secondary btn-sm w-100">儲存 Email 設定</button></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 新增表單 -->
+        <div class="card">
+            <div class="card-header text-primary">
+                <i class="fas fa-plus-circle"></i> 新增項目
+            </div>
+            <div class="card-body">
+                <form id="addForm">
+                    <div class="row g-3">
+                        <div class="col-md-4">
+                            <label class="form-label">項目名稱</label>
+                            <input type="text" class="form-control" id="itemName" required placeholder="例如: Zoom 訂閱">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">負責人</label>
+                            <input type="text" class="form-control" id="inCharge" required placeholder="陳老師">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">Email</label>
+                            <input type="email" class="form-control" id="email" required>
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label">到期日</label>
+                            <input type="date" class="form-control" id="expiryDate" required>
+                        </div>
+                        <div class="col-12 text-end">
+                            <button type="submit" class="btn btn-primary">新增至雲端</button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- 列表 -->
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="fas fa-list"></i> 續期清單</span>
+                <button onclick="window.checkReminders()" class="btn btn-warning btn-sm fw-bold text-dark">
+                    <i class="fas fa-paper-plane"></i> 檢查並發送通知
+                </button>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0 align-middle">
+                        <thead class="table-light">
+                            <tr>
+                                <th>項目</th>
+                                <th>負責人</th>
+                                <th>到期日</th>
+                                <th>剩餘天數</th>
+                                <th>狀態</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tableBody">
+                            <tr><td colspan="6" class="text-center p-4">正在載入資料...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 引入 Firebase SDK (使用 Module 模式) -->
+    <script type="module">
+        // 1. 引入必要的 Firebase 函式庫
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+        import { getFirestore, collection, addDoc, deleteDoc, updateDoc, doc, onSnapshot, query, orderBy } 
+        from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+
+        // ============================================================
+        // 2. 設定 Firebase (請將您從 Firebase Console 複製的內容貼在下方)
+        // ============================================================
+        const firebaseConfig = {
+            // ⚠️⚠️⚠️ 請在此處貼上您的 config，範例如下：
+            // apiKey: "AIzaSyD...",
+            // authDomain: "your-project.firebaseapp.com",
+            // projectId: "your-project",
+            // storageBucket: "your-project.appspot.com",
+            // messagingSenderId: "123456",
+            // appId: "1:123456:web:..."
+        };
+
+        // 初始化 Firebase
+        let app, db;
+        try {
+            app = initializeApp(firebaseConfig);
+            db = getFirestore(app);
+            console.log("Firebase 連線成功");
+        } catch (e) {
+            console.error("Firebase 初始化失敗，請檢查 config", e);
+            document.getElementById('tableBody').innerHTML = `<tr><td colspan="6" class="text-center text-danger">Firebase 連線失敗，請檢查程式碼中的 firebaseConfig 設定。</td></tr>`;
+        }
+
+        // ============================================================
+        // 3. 程式邏輯
+        // ============================================================
+
+        // 監聽資料庫變動 (Real-time listener)
+        if (db) {
+            const q = query(collection(db, "renewals"), orderBy("expiryDate"));
+            
+            onSnapshot(q, (snapshot) => {
+                const tbody = document.getElementById('tableBody');
+                tbody.innerHTML = '';
+                
+                if (snapshot.empty) {
+                    tbody.innerHTML = '<tr><td colspan="6" class="text-center p-4 text-muted">目前沒有資料</td></tr>';
+                    return;
+                }
+
+                snapshot.forEach((docSnap) => {
+                    const item = docSnap.data();
+                    const id = docSnap.id;
+                    renderRow(id, item, tbody);
+                });
+            }, (error) => {
+                console.error("讀取資料失敗:", error);
+                alert("讀取資料失敗，可能是權限過期或網路問題。");
+            });
+        }
+
+        // 計算天數
+        function getDaysDiff(dateString) {
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            const expiry = new Date(dateString);
+            const diffTime = expiry - today;
+            return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+        }
+
+        // 渲染單列
+        function renderRow(id, item, tbody) {
+            const daysLeft = getDaysDiff(item.expiryDate);
+            let statusClass = 'status-ok';
+            let statusText = '<span class="badge bg-success">正常</span>';
+
+            if (daysLeft < 0) {
+                statusClass = 'status-urgent';
+                statusText = '<span class="badge bg-danger">已過期</span>';
+            } else if (daysLeft <= 14) {
+                statusClass = 'status-warning';
+                if (item.reminderSent) {
+                    statusText = '<span class="badge bg-secondary">已通知</span>';
+                } else {
+                    statusText = '<span class="badge bg-warning text-dark">即將到期</span>';
+                }
+            }
+
+            const tr = document.createElement('tr');
+            tr.className = statusClass;
+            tr.innerHTML = `
+                <td>${item.name}</td>
+                <td>
+                    <div>${item.inCharge}</div>
+                    <small class="text-muted">${item.email}</small>
+                </td>
+                <td>${item.expiryDate}</td>
+                <td>${daysLeft} 天</td>
+                <td>${statusText}</td>
+                <td>
+                    <button class="btn btn-sm btn-outline-danger delete-btn" data-id="${id}">
+                        <i class="fas fa-trash"></i>
+                    </button>
+                </td>
+            `;
+            tbody.appendChild(tr);
+        }
+
+        // 新增資料
+        document.getElementById('addForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            showLoading(true);
+            
+            try {
+                await addDoc(collection(db, "renewals"), {
+                    name: document.getElementById('itemName').value,
+                    inCharge: document.getElementById('inCharge').value,
+                    email: document.getElementById('email').value,
+                    expiryDate: document.getElementById('expiryDate').value,
+                    reminderSent: false,
+                    createdAt: new Date()
+                });
+                document.getElementById('addForm').reset();
+            } catch (e) {
+                alert("新增失敗: " + e.message);
+            }
+            showLoading(false);
+        });
+
+        // 刪除資料 (透過事件委派)
+        document.getElementById('tableBody').addEventListener('click', async (e) => {
+            const btn = e.target.closest('.delete-btn');
+            if (btn) {
+                if(confirm("確定要刪除此項目嗎？")) {
+                    const id = btn.dataset.id;
+                    try {
+                        await deleteDoc(doc(db, "renewals", id));
+                    } catch (err) {
+                        alert("刪除失敗");
+                    }
+                }
+            }
+        });
+
+        // 檢查並發送提醒 (掛載到 window 以便 HTML 按鈕呼叫)
+        window.checkReminders = async function() {
+            const pubKey = localStorage.getItem('ejs_pub');
+            const svcId = localStorage.getItem('ejs_svc');
+            const tplId = localStorage.getItem('ejs_tpl');
+
+            if (!pubKey || !svcId || !tplId) {
+                alert("請先設定 EmailJS 資訊！");
+                return;
+            }
+
+            emailjs.init(pubKey);
+            showLoading(true, "正在檢查並發送郵件...");
+
+            // 重新抓取一次最新資料進行檢查 (不依賴畫面上的，確保準確)
+            // 這裡為了簡單，我們直接遍歷畫面上已經抓到的資料，
+            // 但在 Module 模式下，我們需要重新 query 一次比較保險
+            // 為了方便，我們直接用 onSnapshot 已經同步的邏輯，這裡我們用 getDocs 抓一次快照
+            
+            // 由於 module scope 限制，我們簡單實作：
+            // 重新 query 一次
+            try {
+                const { getDocs } = await import("https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js");
+                const querySnapshot = await getDocs(collection(db, "renewals"));
+                
+                let emailCount = 0;
+                let promises = [];
+
+                querySnapshot.forEach((docSnap) => {
+                    const item = docSnap.data();
+                    const daysLeft = getDaysDiff(item.expiryDate);
+
+                    // 條件：14天內 且 尚未發送
+                    if (daysLeft <= 14 && !item.reminderSent) {
+                        const templateParams = {
+                            to_name: item.inCharge,
+                            to_email: item.email,
+                            software_name: item.name,
+                            expiry_date: item.expiryDate,
+                            days_left: daysLeft > 0 ? daysLeft : "已過期",
+                        };
+
+                        // 發送郵件 Promise
+                        const p = emailjs.send(svcId, tplId, templateParams)
+                            .then(() => {
+                                console.log(`Email sent to ${item.inCharge}`);
+                                emailCount++;
+                                // 更新資料庫狀態
+                                return updateDoc(doc(db, "renewals", docSnap.id), { reminderSent: true });
+                            })
+                            .catch(err => console.error("Email error:", err));
+                        
+                        promises.push(p);
+                    }
+                });
+
+                await Promise.all(promises);
+                
+                if (emailCount > 0) {
+                    alert(`成功發送 ${emailCount} 封提醒信！`);
+                } else {
+                    alert("沒有需要發送提醒的項目。");
+                }
+
+            } catch (e) {
+                console.error(e);
+                alert("檢查過程發生錯誤");
+            }
+            showLoading(false);
+        };
+
+        // UI Helper
+        function showLoading(show, text = "處理中...") {
+            const overlay = document.getElementById('loadingOverlay');
+            document.getElementById('loadingText').innerText = text;
+            overlay.style.display = show ? 'flex' : 'none';
+        }
+    </script>
+
+    <script>
+        // 一般 JS 區塊：處理 LocalStorage 的 EmailJS 設定 UI
+        // 這些不需要 Firebase，獨立出來比較單純
+        window.onload = function() {
+            document.getElementById('ejs_pub').value = localStorage.getItem('ejs_pub') || '';
+            document.getElementById('ejs_svc').value = localStorage.getItem('ejs_svc') || '';
+            document.getElementById('ejs_tpl').value = localStorage.getItem('ejs_tpl') || '';
+        };
+
+        function saveEmailConfig() {
+            localStorage.setItem('ejs_pub', document.getElementById('ejs_pub').value);
+            localStorage.setItem('ejs_svc', document.getElementById('ejs_svc').value);
+            localStorage.setItem('ejs_tpl', document.getElementById('ejs_tpl').value);
+            alert("Email 設定已儲存 (本機)");
+        }
+    </script>
+</body>
+</html>
